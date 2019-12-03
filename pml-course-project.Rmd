@@ -1,7 +1,9 @@
 ---
 title: "Classifying Weight Lifting Exercises through Human Activity Data"
 author: "J. Schütt"
-output: html_document
+output: 
+  html_document: 
+    self_contained: no
 ---
 
 ```{r setup, include=FALSE}
