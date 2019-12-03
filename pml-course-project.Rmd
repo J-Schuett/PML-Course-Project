@@ -1,0 +1,107 @@
+---
+title: "Classifying Weight Lifting Exercises through Human Activity Data"
+author: "J. Schütt"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Introduction
+This report deals with a dataset concerning dumbbell curls that was collected using sensors on the arm, forearm, belt and the dumbell. Our aim is to classify the exercise data into five classes of wrongly performed exercises. See [here](http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har) for more details and the original data.
+
+## Data Preparation (Code Book)
+First, we download the data and split it into a training and testing set (75% training, 25% testing). Additionally, we load a final testing set of 20 observations that is unlabeled.
+
+```{r, message=FALSE}
+library(ggplot2)
+library(caret)
+
+# download data
+if(!file.exists("pml-training.csv"))
+    download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", destfile = "pml-training.csv", method="curl")
+if(!file.exists("pml-testing.csv"))
+    download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", destfile = "pml-testing.csv", method="curl")
+
+set.seed(4538)
+
+# load training data
+data <- read.csv("pml-training.csv")
+# split the data into training and testing sets
+inTrain <- createDataPartition(y=data$classe, p=0.75, list=FALSE)
+training <- data[inTrain,]
+testing <- data[-inTrain,]
+
+final_test <- read.csv("pml-testing.csv")
+```
+
+### Cleaning the Data
+Of the original 160 features many are very sparse (e.g. contain almost exclusively NA entries or factor variables with mostly blank entries). We completely remove these columns. The original data consists of timeseries and the original [research paper](http://web.archive.org/web/20161224072740/http://groupware.les.inf.puc-rio.br/work.jsf?p1=11201) made use of that fact. However, since the final testing set we are interested in does not contain timeseries data, we also remove columns concerning time. Finally, we remove the subjects names, since our analysis is meant to be independent of the subject. We also remove the first column, which just consists of the indices. After this, We are left with 52 numeric (or integer) columns and one column for the classes.
+
+```{r}
+# remove columns with NA entries
+training2 <- training[sapply(training, function(x) !any(is.na(x)))] 
+# remove factor variables
+training2 <- training2[sapply(training2, function(x) class(x) %in% c("integer","numeric"))]
+# remove index, user and time related features
+training2 <- training2[,-c(1,2,3,4)]
+# add the classes again
+training2$classe <- training$classe
+
+# save the used columns and restrict the testing data
+used_cols <- names(training2)
+testing <- testing[,used_cols]
+final_test <- final_test[,used_cols[1:52]] # does not have a "classe" column
+```
+
+## Feature Selection
+Probably because we ignored the timeseries data, our features display highly nonlinear behaviour that does not easily lend itself to separate the classes. As an example, consider the following plot.
+```{r}
+ggplot(training2, aes(x=accel_forearm_x, y=accel_forearm_y, col=classe)) + geom_point(alpha = .5)
+```
+Moreover, many of the features have similar distributions. For example:
+```{r}
+qplot(x=accel_dumbbell_y, color = classe, geom = "density", data=training2) 
+```
+
+Therefore, we perform a principal component analysis instead of selecting suitable features by hand. We aim to explain 95% of the variability with the chosen principal components. It turns out that this halves the number of features, which helps to speed up the training considerably. We use the PCA obtained from our training set to transform the testing and final testing set as well.
+```{r}
+# do pca excluding classe
+preProc <- preProcess(training2[1:52], method = "pca", thresh = 0.95)
+training_pca <- predict(preProc,training2[1:52])
+#apply pca to test sets
+testing_pca <- predict(preProc, testing[1:52])
+final_test_pca <- predict(preProc, final_test)
+```
+
+Interestingly, even the first two principal components do not show obvious linear or separating behaviour.
+```{r}
+qplot(x=training_pca[,1], y=training_pca[,2], color=training2$classe, alpha=.5, xlab="principal component 1", ylab="principal component 2") + theme(legend.position="none")
+```
+
+## Model Selection and Training
+Since we have considerable nonlinearity, we choose a random forest as our model. The training takes quite a bit of time and this is one of the reasons, we only use half of the principal components (epxplaining 95% of the variabilty).
+```{r}
+modPCAFit <- train(y=training2$classe, x=training_pca, method = "rf")
+```
+
+## Model Testing and Predictions
+Next, we test our model on the testing set.
+```{r}
+pred <- predict(modPCAFit, testing_pca)
+conf <- confusionMatrix(pred,testing$classe)
+conf$byClass
+```
+
+As can be seen, we have very high values of sensitivity, specificity and accuracy for every class. Overall, we have an accuracy of `r conf$overall["Accuracy"]`. In other words, we can expect the out of sample error rate to be around `r 1-conf$overall["Accuracy"]`.
+```{r}
+df <- data.frame(conf$table)
+ggplot(data=df, aes(Prediction, Reference)) + geom_tile(aes(fill = Freq), colour = "white") + scale_fill_gradient(low = "red2", high = "yellow") +
+  geom_text(aes(label=Freq)) + labs(fill = "")
+```
+
+Finally, we obtain the following predictions for the final testing set.
+```{r}
+pred_final <- predict(modPCAFit, final_test_pca)
+pred_final
+```
